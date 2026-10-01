@@ -260,6 +260,86 @@ function writeResultsSummary(flowKeys, state) {
   }
 }
 
+// maestro-runner batch mode: every pending flow runs in one maestro-runner
+// process, so the on-device agent stays up between flows. Per-flow state is
+// still saved, so the retry workflows keep skipping flows that passed.
+function runMaestroBatch(flows, appId, attempt) {
+  const out = `${MAESTRO_LOG_DIRECTORY}/batch-${attempt}`;
+  const list = flows.map(flow => `"${flow}"`).join(' ');
+  console.info(`Executing ${flows.length} flow(s) in one maestro-runner run`);
+  try {
+    childProcess.execSync(
+      `$HOME/.maestro-runner/bin/maestro-runner --platform android test -e APP_ID="${appId}" --output ${out} --flatten ${list}`,
+      {stdio: 'inherit', timeout: 1000 * 60 * 85},
+    );
+  } catch (error) {
+    // Per-flow results are read from report.json below.
+  }
+  try {
+    fs.copyFileSync(path.join(out, 'junit-report.xml'), 'report.xml');
+  } catch (error) {}
+  const statuses = {};
+  try {
+    const report = JSON.parse(
+      fs.readFileSync(path.join(out, 'report.json'), 'utf8'),
+    );
+    for (const flow of report.flows ?? []) {
+      statuses[path.basename(flow.sourceFile)] = flow.status;
+    }
+  } catch (error) {
+    console.error(`Could not read ${out}/report.json: ${error}`);
+  }
+  return statuses;
+}
+
+function executeFlowSuiteBatch({flows, appId, state, statePath}) {
+  const flowKeys = flows.map(getFlowKey);
+  for (const flow of flowKeys) {
+    state.flows[flow] ??= {status: 'pending', attempts: 0};
+  }
+  saveState(statePath, state);
+
+  const pending = flows.filter(
+    (flow, index) => state.flows[flowKeys[index]].status !== 'passed',
+  );
+  if (pending.length < flows.length) {
+    console.info(
+      `Skipping ${flows.length - pending.length} previously passed flow(s)`,
+    );
+  }
+
+  const failedFlows = [];
+  if (pending.length > 0) {
+    const attempt =
+      Math.max(...pending.map(flow => state.flows[getFlowKey(flow)].attempts)) +
+      1;
+    const statuses = runMaestroBatch(pending, appId, attempt);
+    for (const flow of pending) {
+      const flowKey = getFlowKey(flow);
+      const result = state.flows[flowKey];
+      result.attempts += 1;
+      const status = statuses[path.basename(flow)];
+      if (status === 'passed') {
+        result.status = 'passed';
+        delete result.error;
+      } else {
+        result.status = 'failed';
+        result.error = `maestro-runner: ${status ?? 'not run'}`;
+        failedFlows.push(flowKey);
+      }
+    }
+    saveState(statePath, state);
+  }
+
+  writeResultsSummary(flowKeys, state);
+
+  if (failedFlows.length > 0) {
+    throw new Error(
+      `${failedFlows.length} Maestro flow(s) failed:\n${failedFlows.join('\n')}`,
+    );
+  }
+}
+
 function executeFlowSuite({
   flows,
   appId,
@@ -382,7 +462,7 @@ async function main(args = process.argv.slice(2)) {
     const flows = filterFlowsByTags(collectFlows(maestroFlow), excludeTags);
     const state = loadState(statePath);
     console.info(`Start testing ${flows.length} flow(s)`);
-    executeFlowSuite({flows, appId, state, statePath});
+    executeFlowSuiteBatch({flows, appId, state, statePath});
   } catch (caughtError) {
     error = caughtError;
   } finally {
