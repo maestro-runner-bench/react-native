@@ -185,7 +185,10 @@ async function executeFlowWithRetries(
   const recProcess = startVideoRecording(udid, currentAttempt);
   try {
     const timeout = 1000 * 60 * 10; // 10 minutes
-    const command = `$HOME/.maestro/bin/maestro --udid="${udid}" test "${flow}" --format junit -e APP_ID="${appId}"`;
+    // maestro-runner instead of Maestro; same flow, same APP_ID. Its JUnit
+    // report is copied to report.xml, where `maestro --format junit` wrote it.
+    const out = `/tmp/MaestroRunner/attempt-${currentAttempt}`;
+    const command = `$HOME/.maestro-runner/bin/maestro-runner --platform ios --device "${udid}" test "${flow}" -e APP_ID="${appId}" --output ${out} --flatten; rc=$?; cp ${out}/junit-report.xml report.xml 2>/dev/null; exit $rc`;
     console.info(`Executing flow: ${flow} (attempt ${currentAttempt})`);
     console.log(command);
     childProcess.execSync(`MAESTRO_DRIVER_STARTUP_TIMEOUT=1500000 ${command}`, {
