@@ -49,6 +49,11 @@ runs:
     - name: Installing Maestro
       shell: bash
       run: export MAESTRO_VERSION=2.6.1; curl -Ls "https://get.maestro.mobile.dev" | bash
+    - name: Installing maestro-runner
+      shell: bash
+      run: |
+        curl -fsSL https://open.devicelab.dev/install/maestro-runner | bash -s -- --version 1.1.28
+        $HOME/.maestro-runner/bin/maestro-runner --version
     - name: Set up JDK 17
       if: ${{ inputs.install-java == 'true' }}
       uses: actions/setup-java@v5
