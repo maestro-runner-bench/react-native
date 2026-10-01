@@ -218,6 +218,76 @@ async function executeFlowWithRetries(
   }
 }
 
+// Same flow list as executeFlows: sorted, recursing into folders except
+// helpers/, which holds runFlow fragments.
+function collectFlows(maestroFlow) {
+  if (!fs.existsSync(maestroFlow) || !fs.lstatSync(maestroFlow).isDirectory()) {
+    return [maestroFlow];
+  }
+  const flows = [];
+  for (const file of fs.readdirSync(maestroFlow).sort()) {
+    const filePath = `${maestroFlow.replace(/\/$/, '')}/${file}`;
+    if (fs.lstatSync(filePath).isDirectory()) {
+      if (file !== 'helpers') {
+        flows.push(...collectFlows(filePath));
+      }
+    } else if (file.endsWith('.yml') || file.endsWith('.yaml')) {
+      flows.push(filePath);
+    }
+  }
+  return flows;
+}
+
+// maestro-runner batch mode: all flows run in one maestro-runner process, so
+// the iOS agent stays up between flows. Flows that fail are run again, up to
+// MAX_ATTEMPTS runs in total, as the per-flow retries did.
+async function executeFlowsBatch(appId, udid, maestroFlow) {
+  let pending = collectFlows(maestroFlow);
+  for (
+    let attempt = 1;
+    attempt <= MAX_ATTEMPTS && pending.length > 0;
+    attempt++
+  ) {
+    const out = `/tmp/MaestroRunner/attempt-${attempt}`;
+    const list = pending.map(flow => `"${flow}"`).join(' ');
+    const command = `$HOME/.maestro-runner/bin/maestro-runner --platform ios --device "${udid}" test -e APP_ID="${appId}" --output ${out} --flatten ${list}`;
+    console.info(
+      `Executing ${pending.length} flow(s) in one maestro-runner run (attempt ${attempt})`,
+    );
+    console.log(command);
+    const recProcess = startVideoRecording(udid, attempt);
+    try {
+      childProcess.execSync(command, {
+        stdio: 'inherit',
+        timeout: 1000 * 60 * 120,
+      });
+    } catch (error) {
+      // Per-flow results are read from report.json below.
+    }
+    await stopVideoRecording(recProcess);
+    try {
+      fs.copyFileSync(`${out}/junit-report.xml`, 'report.xml');
+    } catch (error) {}
+    const statuses = {};
+    try {
+      const report = JSON.parse(fs.readFileSync(`${out}/report.json`, 'utf8'));
+      for (const flow of report.flows ?? []) {
+        statuses[flow.sourceFile.split('/').pop()] = flow.status;
+      }
+    } catch (error) {
+      console.error(`Could not read ${out}/report.json: ${error}`);
+    }
+    pending = pending.filter(
+      flow => statuses[flow.split('/').pop()] !== 'passed',
+    );
+  }
+  if (pending.length > 0) {
+    throw new Error(
+      `Failed to execute ${pending.length} flow(s) after ${MAX_ATTEMPTS} attempts:\n${pending.join('\n')}`,
+    );
+  }
+}
+
 async function executeFlows(appId, udid, maestroFlow, jsengine) {
   if (!fs.existsSync(maestroFlow) || !fs.lstatSync(maestroFlow).isDirectory()) {
     await executeFlowWithRetries(appId, udid, maestroFlow, jsengine, 1);
@@ -270,7 +340,7 @@ async function main(args = process.argv.slice(2)) {
   installAppOnSimulator(appPath, simulator.udid);
   bringSimulatorInForeground();
   await launchAppOnSimulator(appId, simulator.udid, isDebug);
-  await executeFlows(appId, simulator.udid, maestroFlow, jsengine);
+  await executeFlowsBatch(appId, simulator.udid, maestroFlow);
   console.log('Test finished');
 }
 
