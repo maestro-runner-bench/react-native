@@ -138,7 +138,7 @@ function runMaestroFlow(flow, appId) {
     childProcess.execSync(
       // maestro-runner instead of Maestro; same flow, same APP_ID. Its report
       // goes to the log directory and its JUnit is copied to report.xml.
-      `out=${MAESTRO_LOG_DIRECTORY}/${path.basename(flow, path.extname(flow))}; $HOME/.maestro-runner/bin/maestro-runner --platform android test "${flow}" -e APP_ID="${appId}" --output $out --flatten; rc=$?; cp $out/junit-report.xml report.xml 2>/dev/null; exit $rc`,
+      `out=${MAESTRO_LOG_DIRECTORY}/${path.basename(flow, path.extname(flow))}; $HOME/.maestro-runner/bin/maestro-runner --platform android test -e APP_ID="${appId}" --output $out --flatten "${flow}"; rc=$?; cp $out/junit-report.xml report.xml 2>/dev/null; exit $rc`,
       {stdio: 'inherit', timeout},
     );
   } catch (error) {
