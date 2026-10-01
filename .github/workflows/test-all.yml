@@ -119,7 +119,7 @@ jobs:
           flavor: Debug
 
   test_ios_rntester_dynamic_frameworks:
-    runs-on: macos-15-large
+    runs-on: macos-15-intel
     needs: check_code_changes
     if: |
       needs.check_code_changes.outputs.any_code_change == 'true' &&
@@ -139,7 +139,7 @@ jobs:
           run-unit-tests: false # tests for dynamic frameworks are already run in the test_ios_rntester job; this is to just a test build from source (no prebuilds)
 
   test_ios_rntester:
-    runs-on: macos-15-large
+    runs-on: macos-15-intel
     needs: [prebuild_apple_dependencies, prebuild_react_native_core]
     if: ${{ needs.prebuild_react_native_core.result == 'success' }}
     continue-on-error: true
@@ -293,7 +293,7 @@ jobs:
     secrets: inherit
 
   build_fantom_runner:
-    runs-on: 8-core-ubuntu
+    runs-on: ubuntu-latest
     needs: [set_release_type, check_code_changes, lint]
     if: needs.check_code_changes.outputs.any_code_change == 'true'
     container:
@@ -336,7 +336,7 @@ jobs:
     secrets: inherit
 
   build_android:
-    runs-on: 8-core-ubuntu
+    runs-on: ubuntu-latest
     needs: [set_release_type, check_code_changes]
     if: |
       needs.check_code_changes.outputs.any_code_change == 'true' &&
@@ -407,7 +407,7 @@ jobs:
     secrets: inherit
 
   build_npm_package:
-    runs-on: 8-core-ubuntu
+    runs-on: ubuntu-latest
     needs:
       [
         set_release_type,
@@ -443,7 +443,7 @@ jobs:
           skip-apple-prebuilts: ${{ needs.check_code_changes.outputs.should_test_ios == 'false' }}
 
   test_android_helloworld:
-    runs-on: 4-core-ubuntu
+    runs-on: ubuntu-latest
     needs: [build_npm_package, build_android]
     if: ${{ always() && needs.build_android.result == 'success' && needs.build_npm_package.result == 'success' }}
     container:
