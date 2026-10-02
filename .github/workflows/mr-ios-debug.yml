@@ -55,6 +55,25 @@ jobs:
           ./packages/react-native-codegen/scripts/oss/build.sh
           yarn start &
           sleep 5
+      - name: Boot the simulator and install the app (timed)
+        timeout-minutes: 30
+        run: |
+          set +e
+          t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          UDID=$(xcrun simctl list devices available -j | node -e 'const d=JSON.parse(require("fs").readFileSync(0)).devices["com.apple.CoreSimulator.SimRuntime.iOS-26-2"]||[]; const s=d.find(x=>x.name==="iPhone 17 Pro"); process.stdout.write(s?s.udid:"")')
+          echo "simulator: $UDID" | tee "$DEBUG_DIR/boot.txt"
+          [ -n "$UDID" ] || { xcrun simctl list devices available | tee -a "$DEBUG_DIR/boot.txt"; exit 1; }
+          s=$(date +%s); xcrun simctl boot "$UDID" 2>&1 | tee -a "$DEBUG_DIR/boot.txt"
+          echo "boot command: $(( $(date +%s)-s ))s" | tee -a "$DEBUG_DIR/boot.txt"
+          s=$(date +%s); t 900 xcrun simctl bootstatus "$UDID" -b > "$DEBUG_DIR/bootstatus.txt" 2>&1; rc=$?
+          echo "bootstatus rc=$rc after $(( $(date +%s)-s ))s" | tee -a "$DEBUG_DIR/boot.txt"
+          s=$(date +%s); t 600 xcrun simctl install "$UDID" /tmp/RNTesterBuild/RNTester.app 2>&1 | tee -a "$DEBUG_DIR/boot.txt"; rc2=${PIPESTATUS[0]}
+          echo "install rc=$rc2 after $(( $(date +%s)-s ))s" | tee -a "$DEBUG_DIR/boot.txt"
+          xcrun simctl list devices booted | tee -a "$DEBUG_DIR/boot.txt"
+          if [ $rc != 0 ] || [ $rc2 != 0 ]; then
+            ps -axo pid,etime,%cpu,command | grep -iE "simulator|simctl|launchd_sim|CoreSimulator" | grep -v grep > "$DEBUG_DIR/boot-processes.txt"
+            exit 1
+          fi
       - name: Watchdog - sample the agent when it stops answering
         run: |
           # Every 20s: once a runner log reports "did not answer", take up to
