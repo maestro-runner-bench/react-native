@@ -74,6 +74,17 @@ function launchSimulator(simulator) {
       throw error;
     }
   }
+  // `simctl boot` returns before the simulator has finished booting, and an
+  // install sent then can hang (seen on GitHub's macOS runners). Wait for the
+  // boot to complete first, bounded so a simulator that never boots fails the
+  // step instead of holding it.
+  console.log('Waiting for the simulator to finish booting');
+  const start = Date.now();
+  childProcess.execSync(`xcrun simctl bootstatus "${simulator.udid}" -b`, {
+    stdio: 'ignore',
+    timeout: 1000 * 60 * 15,
+  });
+  console.log(`Simulator booted after ${Math.round((Date.now() - start) / 1000)}s`);
 }
 
 function installAppOnSimulator(appPath, udid) {
