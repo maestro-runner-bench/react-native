@@ -250,51 +250,44 @@ function collectFlows(maestroFlow) {
 }
 
 // maestro-runner batch mode: all flows run in one maestro-runner process, so
-// the iOS agent stays up between flows. Flows that fail are run again, up to
-// MAX_ATTEMPTS runs in total, as the per-flow retries did.
+// the iOS agent stays up between flows. Flows that fail are run again in the
+// same process (--retries), up to MAX_ATTEMPTS runs in total, as the
+// per-flow retries did.
 async function executeFlowsBatch(appId, udid, maestroFlow) {
-  let pending = collectFlows(maestroFlow);
-  for (
-    let attempt = 1;
-    attempt <= MAX_ATTEMPTS && pending.length > 0;
-    attempt++
-  ) {
-    const out = `/tmp/MaestroRunner/attempt-${attempt}`;
-    const list = pending.map(flow => `"${flow}"`).join(' ');
-    const command = `$HOME/.maestro-runner/bin/maestro-runner --platform ios --device "${udid}" test -e APP_ID="${appId}" --output ${out} --flatten ${list}`;
-    console.info(
-      `Executing ${pending.length} flow(s) in one maestro-runner run (attempt ${attempt})`,
-    );
-    console.log(command);
-    const recProcess = startVideoRecording(udid, attempt);
-    try {
-      childProcess.execSync(command, {
-        stdio: 'inherit',
-        timeout: 1000 * 60 * 120,
-      });
-    } catch (error) {
-      // Per-flow results are read from report.json below.
-    }
-    await stopVideoRecording(recProcess);
-    try {
-      fs.copyFileSync(`${out}/junit-report.xml`, 'report.xml');
-    } catch (error) {}
-    const statuses = {};
-    try {
-      const report = JSON.parse(fs.readFileSync(`${out}/report.json`, 'utf8'));
-      for (const flow of report.flows ?? []) {
-        statuses[flow.sourceFile.split('/').pop()] = flow.status;
-      }
-    } catch (error) {
-      console.error(`Could not read ${out}/report.json: ${error}`);
-    }
-    pending = pending.filter(
-      flow => statuses[flow.split('/').pop()] !== 'passed',
-    );
+  const flows = collectFlows(maestroFlow);
+  const out = '/tmp/MaestroRunner/run';
+  const list = flows.map(flow => `"${flow}"`).join(' ');
+  const command = `$HOME/.maestro-runner/bin/maestro-runner --platform ios --device "${udid}" test -e APP_ID="${appId}" --retries ${MAX_ATTEMPTS - 1} --output ${out} --flatten ${list}`;
+  console.info(`Executing ${flows.length} flow(s) in one maestro-runner run`);
+  console.log(command);
+  const recProcess = startVideoRecording(udid, 1);
+  try {
+    childProcess.execSync(command, {
+      stdio: 'inherit',
+      timeout: 1000 * 60 * 120,
+    });
+  } catch (error) {
+    // Per-flow results are read from report.json below.
   }
-  if (pending.length > 0) {
+  await stopVideoRecording(recProcess);
+  try {
+    fs.copyFileSync(`${out}/junit-report.xml`, 'report.xml');
+  } catch (error) {}
+  const statuses = {};
+  try {
+    const report = JSON.parse(fs.readFileSync(`${out}/report.json`, 'utf8'));
+    for (const flow of report.flows ?? []) {
+      statuses[flow.sourceFile.split('/').pop()] = flow.status;
+    }
+  } catch (error) {
+    console.error(`Could not read ${out}/report.json: ${error}`);
+  }
+  const failed = flows.filter(
+    flow => statuses[flow.split('/').pop()] !== 'passed',
+  );
+  if (failed.length > 0) {
     throw new Error(
-      `Failed to execute ${pending.length} flow(s) after ${MAX_ATTEMPTS} attempts:\n${pending.join('\n')}`,
+      `Failed to execute ${failed.length} flow(s) after ${MAX_ATTEMPTS} attempts:\n${failed.join('\n')}`,
     );
   }
 }
