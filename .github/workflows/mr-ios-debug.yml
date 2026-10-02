@@ -88,7 +88,7 @@ jobs:
             seen=0; n=0
             while :; do
               sleep 15
-              count=$(cat /tmp/MaestroRunner/attempt-*/maestro-runner.log 2>/dev/null | grep -cE "did not answer within|agent unreachable|stopped answering")
+              count=$(cat /tmp/MaestroRunner/*/maestro-runner.log 2>/dev/null | grep -cE "did not answer within|agent unreachable|stopped answering")
               [ "$count" -gt "$seen" ] || continue
               seen=$count; n=$((n+1)); ts=$(date +%H%M%S)
               for pid in $(pgrep -f "AgentUITests-Runner|RNTester.app/RNTester"); do
