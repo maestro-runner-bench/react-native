@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   ios-debug:
-    runs-on: macos-26-intel
+    runs-on: macos-26
     timeout-minutes: 120
     env:
       DEBUG_DIR: /tmp/mr-debug
