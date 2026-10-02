@@ -1,0 +1,114 @@
+name: maestro-runner iOS debug
+
+# Runs RNTester's iOS flows in batch mode with maestro-runner on the iOS app
+# a previous Test All run built, and keeps every log needed to debug the
+# runner: our reports, the agent's launch log and state, the simulator log,
+# and stack samples of the agent process when it stops answering.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Test All run whose RNTester iOS app to use
+        default: '36917315070'
+      flavor:
+        description: Release or Debug
+        default: Release
+      mr_version:
+        description: maestro-runner version to install
+        default: '1.1.28.1'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ios-debug:
+    runs-on: macos-26-intel
+    timeout-minutes: 120
+    env:
+      DEBUG_DIR: /tmp/mr-debug
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+      - name: Download the CI-built RNTester app
+        uses: actions/download-artifact@v7
+        with:
+          name: RNTesterApp-NewArch-${{ inputs.flavor }}
+          path: /tmp/RNTesterBuild/RNTester.app
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+      - name: Install maestro-runner
+        run: |
+          curl -fsSL https://open.devicelab.dev/install/maestro-runner | bash -s -- --version ${{ inputs.mr_version }}
+          $HOME/.maestro-runner/bin/maestro-runner --version
+          mkdir -p "$DEBUG_DIR"
+      - name: Install node dependencies (Debug, for Metro)
+        if: ${{ inputs.flavor == 'Debug' }}
+        uses: ./.github/actions/yarn-install
+      - name: Start Metro (Debug)
+        if: ${{ inputs.flavor == 'Debug' }}
+        run: |
+          ./packages/react-native-codegen/scripts/oss/build.sh
+          yarn start &
+          sleep 5
+      - name: Watchdog - sample the agent when it stops answering
+        run: |
+          # Every 20s: once a runner log reports "did not answer", take up to
+          # 5 stack samples of the agent process and a simulator screenshot.
+          nohup bash -c '
+            n=0
+            while [ $n -lt 5 ]; do
+              sleep 20
+              if grep -qs "did not answer within" /tmp/MaestroRunner/attempt-*/maestro-runner.log /tmp/MaestroRunner/attempt-*/client.log 2>/dev/null; then
+                n=$((n+1)); ts=$(date +%H%M%S)
+                for pid in $(pgrep -f "DevicelabIOSAgent|devicelab-ios-agent|AgentUITests" ); do
+                  sample $pid 3 -file "$DEBUG_DIR/sample-$n-$ts-$pid.txt" >/dev/null 2>&1
+                  ps -o pid,stat,etime,command -p $pid >> "$DEBUG_DIR/sample-$n-$ts-ps.txt" 2>&1
+                done
+                xcrun simctl io booted screenshot "$DEBUG_DIR/screen-$n-$ts.png" >/dev/null 2>&1
+                echo "sampled $n at $ts" >> "$DEBUG_DIR/watchdog.log"
+                sleep 40
+              fi
+            done' > "$DEBUG_DIR/watchdog.out" 2>&1 &
+      - name: Run RNTester flows (batch)
+        timeout-minutes: 75
+        run: |
+          set +e
+          node .github/workflow-scripts/maestro-ios.js \
+            /tmp/RNTesterBuild/RNTester.app \
+            com.meta.RNTester.localDevelopment \
+            ./packages/rn-tester/.maestro/ \
+            Hermes \
+            "${{ inputs.flavor }}" \
+            . \
+            iPhone-17-Pro \
+            iOS-26-2
+          echo "exit=$?"
+      - name: Collect logs
+        if: always()
+        run: |
+          set +e
+          cp -R /tmp/MaestroRunner "$DEBUG_DIR/reports" 2>/dev/null
+          cp -R $HOME/.maestro-runner/cache/devicelab-ios-agent "$DEBUG_DIR/agent-state" 2>/dev/null
+          UDID=$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1)
+          echo "booted: $UDID" > "$DEBUG_DIR/simulator.txt"
+          xcrun simctl list devices >> "$DEBUG_DIR/simulator.txt" 2>&1
+          if [ -n "$UDID" ]; then
+            xcrun simctl spawn $UDID log show --last 3h --style compact \
+              --predicate 'process CONTAINS "Agent" OR process CONTAINS "RNTester" OR process == "SpringBoard" OR process == "testmanagerd" OR process CONTAINS "XCTRunner" OR subsystem CONTAINS "XCTest"' \
+              > "$DEBUG_DIR/simulator-log-filtered.txt" 2>&1
+            xcrun simctl spawn $UDID log show --last 3h --style compact > "$DEBUG_DIR/simulator-log-full.txt" 2>&1
+            gzip -f "$DEBUG_DIR/simulator-log-full.txt"
+          fi
+          ls -la "$DEBUG_DIR"
+      - name: Upload debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mr-ios-debug-${{ inputs.flavor }}
+          path: /tmp/mr-debug/
+          if-no-files-found: warn
