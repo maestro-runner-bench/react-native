@@ -17,6 +17,9 @@ on:
       mr_version:
         description: maestro-runner version to install
         default: '1.1.28.1'
+      flow:
+        description: A flow file or folder to run
+        default: ./packages/rn-tester/.maestro/
 
 permissions:
   contents: read
@@ -90,6 +93,12 @@ jobs:
                 done
                 xcrun simctl io booted screenshot "$DEBUG_DIR/screen-$n-$ts.png" >/dev/null 2>&1
                 echo "sampled $n at $ts" >> "$DEBUG_DIR/watchdog.log"
+                if [ $n -ge 3 ]; then
+                  # Enough evidence: end the run so the logs are collected.
+                  echo "stopping the run after $n samples" >> "$DEBUG_DIR/watchdog.log"
+                  pkill -f "maestro-runner/bin/maestro-runner" ; pkill -f "workflow-scripts/maestro-ios.js"
+                  break
+                fi
                 sleep 40
               fi
             done' > "$DEBUG_DIR/watchdog.out" 2>&1 &
@@ -100,34 +109,45 @@ jobs:
           node .github/workflow-scripts/maestro-ios.js \
             /tmp/RNTesterBuild/RNTester.app \
             com.meta.RNTester.localDevelopment \
-            ./packages/rn-tester/.maestro/ \
+            "${{ inputs.flow }}" \
             Hermes \
             "${{ inputs.flavor }}" \
             . \
             iPhone-17-Pro \
             iOS-26-2
           echo "exit=$?"
-      - name: Collect logs
+      - name: Collect logs (quick)
         if: always()
         run: |
           set +e
           cp -R /tmp/MaestroRunner "$DEBUG_DIR/reports" 2>/dev/null
           cp -R $HOME/.maestro-runner/cache/devicelab-ios-agent "$DEBUG_DIR/agent-state" 2>/dev/null
-          UDID=$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1)
-          echo "booted: $UDID" > "$DEBUG_DIR/simulator.txt"
-          xcrun simctl list devices >> "$DEBUG_DIR/simulator.txt" 2>&1
-          if [ -n "$UDID" ]; then
-            xcrun simctl spawn $UDID log show --last 3h --style compact \
-              --predicate 'process CONTAINS "Agent" OR process CONTAINS "RNTester" OR process == "SpringBoard" OR process == "testmanagerd" OR process CONTAINS "XCTRunner" OR subsystem CONTAINS "XCTest"' \
-              > "$DEBUG_DIR/simulator-log-filtered.txt" 2>&1
-            xcrun simctl spawn $UDID log show --last 3h --style compact > "$DEBUG_DIR/simulator-log-full.txt" 2>&1
-            gzip -f "$DEBUG_DIR/simulator-log-full.txt"
-          fi
+          xcrun simctl list devices > "$DEBUG_DIR/simulator.txt" 2>&1
           ls -la "$DEBUG_DIR"
-      - name: Upload debug logs
+      - name: Upload logs (quick)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mr-ios-debug-${{ inputs.flavor }}
           path: /tmp/mr-debug/
+          if-no-files-found: warn
+      - name: Collect the simulator log (bounded)
+        if: always()
+        timeout-minutes: 8
+        run: |
+          set +e
+          mkdir -p /tmp/mr-debug-simlog
+          UDID=$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1)
+          [ -n "$UDID" ] || exit 0
+          perl -e 'alarm shift; exec @ARGV' 300 xcrun simctl spawn $UDID log show --last 1h --style compact \
+            --predicate 'process CONTAINS "Agent" OR process CONTAINS "RNTester" OR process == "SpringBoard" OR process == "testmanagerd" OR process CONTAINS "XCTRunner" OR subsystem CONTAINS "XCTest"' \
+            > /tmp/mr-debug-simlog/simulator-log-filtered.txt 2>&1
+          gzip -f /tmp/mr-debug-simlog/simulator-log-filtered.txt
+          ls -la /tmp/mr-debug-simlog
+      - name: Upload the simulator log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mr-ios-debug-${{ inputs.flavor }}-simlog
+          path: /tmp/mr-debug-simlog/
           if-no-files-found: warn
