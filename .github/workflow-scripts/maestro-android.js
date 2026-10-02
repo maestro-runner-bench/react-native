@@ -261,15 +261,19 @@ function writeResultsSummary(flowKeys, state) {
 }
 
 // maestro-runner batch mode: every pending flow runs in one maestro-runner
-// process, so the on-device agent stays up between flows. Per-flow state is
+// process, so the on-device agent stays up between flows. Flows that fail
+// are run again in the same process (--retries), up to MAX_BATCH_ATTEMPTS
+// runs each, as the iOS script retries a failing flow. Per-flow state is
 // still saved, so the retry workflows keep skipping flows that passed.
-function runMaestroBatch(flows, appId, attempt) {
-  const out = `${MAESTRO_LOG_DIRECTORY}/batch-${attempt}`;
+const MAX_BATCH_ATTEMPTS = 5;
+
+function runMaestroBatch(flows, appId, run) {
+  const out = `${MAESTRO_LOG_DIRECTORY}/batch-${run}`;
   const list = flows.map(flow => `"${flow}"`).join(' ');
   console.info(`Executing ${flows.length} flow(s) in one maestro-runner run`);
   try {
     childProcess.execSync(
-      `$HOME/.maestro-runner/bin/maestro-runner --platform android test -e APP_ID="${appId}" --output ${out} --flatten ${list}`,
+      `$HOME/.maestro-runner/bin/maestro-runner --platform android test -e APP_ID="${appId}" --retries ${MAX_BATCH_ATTEMPTS - 1} --output ${out} --flatten ${list}`,
       {stdio: 'inherit', timeout: 1000 * 60 * 85},
     );
   } catch (error) {
@@ -278,23 +282,22 @@ function runMaestroBatch(flows, appId, attempt) {
   try {
     fs.copyFileSync(path.join(out, 'junit-report.xml'), 'report.xml');
   } catch (error) {}
-  const statuses = {};
+  const results = {};
   try {
     const report = JSON.parse(
       fs.readFileSync(path.join(out, 'report.json'), 'utf8'),
     );
     for (const flow of report.flows ?? []) {
-      statuses[path.basename(flow.sourceFile)] = flow.status;
+      results[path.basename(flow.sourceFile)] = {
+        status: flow.status,
+        attempts: Math.max(flow.attempts ?? 0, 1),
+      };
     }
   } catch (error) {
     console.error(`Could not read ${out}/report.json: ${error}`);
   }
-  return statuses;
+  return results;
 }
-
-// Rounds of the batch run in one job: flows that fail are run again, up to
-// this many runs each, as the iOS script retries a failing flow.
-const MAX_BATCH_ROUNDS = 5;
 
 function executeFlowSuiteBatch({flows, appId, state, statePath}) {
   const flowKeys = flows.map(getFlowKey);
@@ -303,7 +306,7 @@ function executeFlowSuiteBatch({flows, appId, state, statePath}) {
   }
   saveState(statePath, state);
 
-  let pending = flows.filter(
+  const pending = flows.filter(
     (flow, index) => state.flows[flowKeys[index]].status !== 'passed',
   );
   if (pending.length < flows.length) {
@@ -312,35 +315,34 @@ function executeFlowSuiteBatch({flows, appId, state, statePath}) {
     );
   }
 
-  for (let round = 1; round <= MAX_BATCH_ROUNDS && pending.length > 0; round++) {
-    const attempt =
+  const failedFlows = [];
+  if (pending.length > 0) {
+    const run =
       Math.max(...pending.map(flow => state.flows[getFlowKey(flow)].attempts)) +
       1;
-    console.info(`Round ${round} of ${MAX_BATCH_ROUNDS}`);
-    const statuses = runMaestroBatch(pending, appId, attempt);
-    const failed = [];
+    const results = runMaestroBatch(pending, appId, run);
     for (const flow of pending) {
-      const result = state.flows[getFlowKey(flow)];
-      result.attempts += 1;
-      const status = statuses[path.basename(flow)];
-      if (status === 'passed') {
+      const flowKey = getFlowKey(flow);
+      const result = state.flows[flowKey];
+      const outcome = results[path.basename(flow)];
+      result.attempts += outcome?.attempts ?? 1;
+      if (outcome?.status === 'passed') {
         result.status = 'passed';
         delete result.error;
       } else {
         result.status = 'failed';
-        result.error = `maestro-runner: ${status ?? 'not run'}`;
-        failed.push(flow);
+        result.error = `maestro-runner: ${outcome?.status ?? 'not run'}`;
+        failedFlows.push(flowKey);
       }
     }
     saveState(statePath, state);
-    pending = failed;
   }
 
   writeResultsSummary(flowKeys, state);
 
-  if (pending.length > 0) {
+  if (failedFlows.length > 0) {
     throw new Error(
-      `${pending.length} Maestro flow(s) failed after ${MAX_BATCH_ROUNDS} rounds:\n${pending.map(getFlowKey).join('\n')}`,
+      `${failedFlows.length} Maestro flow(s) failed after ${MAX_BATCH_ATTEMPTS} attempts:\n${failedFlows.join('\n')}`,
     );
   }
 }
