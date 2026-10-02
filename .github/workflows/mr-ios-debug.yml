@@ -77,29 +77,30 @@ jobs:
             ps -axo pid,etime,%cpu,command | grep -iE "simulator|simctl|launchd_sim|CoreSimulator" | grep -v grep > "$DEBUG_DIR/boot-processes.txt"
             exit 1
           fi
-      - name: Watchdog - sample the agent when it stops answering
+      - name: Watchdog - sample the agent and the app when the agent stops answering
         run: |
-          # Every 20s: once a runner log reports "did not answer", take up to
-          # 5 stack samples of the agent process and a simulator screenshot.
+          # Every 15s: each new "did not answer" / "agent unreachable" /
+          # "stopped answering" line in a runner log takes a stack sample of
+          # the agent and of RNTester and a screenshot. A runner that recovers
+          # (restarts the agent) keeps going; after 6 such events the run is
+          # ended so the logs are collected.
           nohup bash -c '
-            n=0
-            while [ $n -lt 5 ]; do
-              sleep 20
-              if grep -qs "did not answer within" /tmp/MaestroRunner/attempt-*/maestro-runner.log /tmp/MaestroRunner/attempt-*/client.log 2>/dev/null; then
-                n=$((n+1)); ts=$(date +%H%M%S)
-                for pid in $(pgrep -f "DevicelabIOSAgent|devicelab-ios-agent|AgentUITests" ); do
-                  sample $pid 3 -file "$DEBUG_DIR/sample-$n-$ts-$pid.txt" >/dev/null 2>&1
-                  ps -o pid,stat,etime,command -p $pid >> "$DEBUG_DIR/sample-$n-$ts-ps.txt" 2>&1
-                done
-                xcrun simctl io booted screenshot "$DEBUG_DIR/screen-$n-$ts.png" >/dev/null 2>&1
-                echo "sampled $n at $ts" >> "$DEBUG_DIR/watchdog.log"
-                if [ $n -ge 3 ]; then
-                  # Enough evidence: end the run so the logs are collected.
-                  echo "stopping the run after $n samples" >> "$DEBUG_DIR/watchdog.log"
-                  pkill -f "maestro-runner/bin/maestro-runner" ; pkill -f "workflow-scripts/maestro-ios.js"
-                  break
-                fi
-                sleep 40
+            seen=0; n=0
+            while :; do
+              sleep 15
+              count=$(cat /tmp/MaestroRunner/attempt-*/maestro-runner.log 2>/dev/null | grep -cE "did not answer within|agent unreachable|stopped answering")
+              [ "$count" -gt "$seen" ] || continue
+              seen=$count; n=$((n+1)); ts=$(date +%H%M%S)
+              for pid in $(pgrep -f "AgentUITests-Runner|RNTester.app/RNTester"); do
+                ps -o pid,stat,etime,%cpu,command -p $pid >> "$DEBUG_DIR/sample-$n-$ts-ps.txt" 2>&1
+                sample $pid 3 -file "$DEBUG_DIR/sample-$n-$ts-$pid.txt" >/dev/null 2>&1
+              done
+              xcrun simctl io booted screenshot "$DEBUG_DIR/screen-$n-$ts.png" >/dev/null 2>&1
+              echo "event $n at $ts (matching lines: $count)" >> "$DEBUG_DIR/watchdog.log"
+              if [ $n -ge 6 ]; then
+                echo "stopping the run after $n events" >> "$DEBUG_DIR/watchdog.log"
+                pkill -f "maestro-runner/bin/maestro-runner" ; pkill -f "workflow-scripts/maestro-ios.js"
+                break
               fi
             done' > "$DEBUG_DIR/watchdog.out" 2>&1 &
       - name: Run RNTester flows (batch)
