@@ -99,3 +99,14 @@ runs:
         name: maestro-logs-${{ inputs.app-id }}-${{ inputs.flavor }}-NewArch
         overwrite: true
         path: /tmp/MaestroLogs
+    - name: Store maestro-runner reports and logs
+      if: always()
+      uses: ./.github/actions/upload-artifact
+      with:
+        name: maestro-runner-ios-${{ inputs.app-id }}-${{ inputs.flavor }}
+        overwrite: true
+        # Reports (report.json with per-flow attempts), maestro-runner.log,
+        # client logs, and diagnostics/ when the iOS agent stalled.
+        path: |
+          /tmp/MaestroRunner
+          ~/.maestro-runner/cache/devicelab-ios-agent/*/xcodebuild.log*

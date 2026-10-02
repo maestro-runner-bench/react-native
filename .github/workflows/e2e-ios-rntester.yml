@@ -16,7 +16,7 @@ on:
 
 jobs:
   test:
-    runs-on: macos-26-intel
+    runs-on: macos-26
     outputs:
       status: ${{ steps.report-status.outputs.status }}
     strategy:
