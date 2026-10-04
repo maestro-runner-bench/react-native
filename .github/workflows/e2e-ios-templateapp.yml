@@ -16,7 +16,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26-intel
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +99,7 @@ jobs:
 
   test:
     needs: build
-    runs-on: macos-26-intel
+    runs-on: macos-26
     outputs:
       status: ${{ steps.report-status.outputs.status }}
     strategy:
