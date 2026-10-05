@@ -36,7 +36,7 @@ runs:
     - name: Installing maestro-runner
       shell: bash
       run: |
-        curl -fsSL https://open.devicelab.dev/install/maestro-runner | bash -s -- --version 1.1.28.1
+        curl -fsSL https://open.devicelab.dev/install/maestro-runner | bash -s -- --version 1.1.28.2
         $HOME/.maestro-runner/bin/maestro-runner --version
     - name: Installing Maestro dependencies
       shell: bash
